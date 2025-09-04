@@ -14,6 +14,7 @@ export declare class SharedStateManager {
     private state;
     writeState(state: Partial<SharedState>): Promise<void>;
     readState(): Promise<SharedState>;
+    updateHeartbeat(): Promise<void>;
     clearState(): Promise<void>;
 }
 //# sourceMappingURL=shared-state.d.ts.map

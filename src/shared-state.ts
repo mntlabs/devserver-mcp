@@ -65,6 +65,20 @@ export class SharedStateManager {
     return this.state;
   }
 
+  async updateHeartbeat(): Promise<void> {
+    // Lightweight update - only update timestamp if state exists
+    if (existsSync(STATE_FILE)) {
+      try {
+        const data = await readFileAsync(STATE_FILE, 'utf-8');
+        const parsed = JSON.parse(data) as SharedState;
+        parsed.lastUpdate = Date.now();
+        await writeFileAsync(STATE_FILE, JSON.stringify(parsed, null, 2));
+      } catch (error) {
+        console.error('Failed to update heartbeat:', error);
+      }
+    }
+  }
+
   async clearState(): Promise<void> {
     this.state = {
       processInfo: null,

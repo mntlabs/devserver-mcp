@@ -9,8 +9,8 @@ The implementation uses a **shared state architecture** to enable persistent mon
 - Spawns and monitors dev server process directly
 - Captures all stdout/stderr in real-time  
 - Parses errors with 21+ production-ready regex patterns
-- Writes state to `/tmp/devserver-mcp-state.json` every 10 seconds
-- Updates state on error detection and process events
+- Updates state to `/tmp/devserver-mcp-state.json` on error detection and process events
+- Event-driven state management for optimal responsiveness
 
 **Client Mode (default)**:
 - Launched by Claude Code for each MCP query
@@ -141,7 +141,7 @@ This architecture can be adapted for:
 - Regex state management prevents memory leaks
 
 ### **I/O Performance** 
-- 10-second shared state update intervals
+- Event-driven state updates (immediate on errors/process events)
 - Minimal disk usage with JSON serialization
 - File watching with intelligent path filtering
 

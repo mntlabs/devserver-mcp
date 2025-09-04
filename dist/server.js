@@ -232,61 +232,6 @@ class DevServerMCP {
             description: 'Clear all stored error history',
             inputSchema: {},
         }, async () => createClearErrorHistory(this.logParser).handler());
-        this.server.registerTool('start_dev_server', {
-            title: 'Start Dev Server',
-            description: 'Start a development server under MCP monitoring for real-time error detection',
-            inputSchema: {
-                command: z.string().describe('The command to run (e.g., "pnpm", "npm", "yarn")'),
-                args: z.array(z.string()).optional().describe('Command arguments (e.g., ["run", "dev"])'),
-                cwd: z.string().optional().describe('Working directory (defaults to current)'),
-            },
-        }, async (args) => {
-            try {
-                // Stop any existing monitoring first
-                this.processMonitor.stopMonitoring();
-                // Start monitoring the new process
-                await this.processMonitor.startMonitoring(args.command, args.args || [], args.cwd);
-                // Start file watching
-                this.fileWatcher.startWatching();
-                const processInfo = this.processMonitor.getProcessInfo();
-                return {
-                    content: [{
-                            type: 'text',
-                            text: `🚀 **Dev Server Started Successfully**
-
-**Command**: ${args.command} ${(args.args || []).join(' ')}
-**PID**: ${processInfo?.pid || 'Unknown'}
-**Working Directory**: ${args.cwd || process.cwd()}
-**Status**: ${processInfo?.status || 'Starting'}
-
-✅ **Real-time monitoring is now active**:
-• Parsing all dev server output for errors
-• Tracking file changes and correlations  
-• Categorizing errors by severity and type
-• Ready to assist with debugging
-
-You can now ask me about any errors that occur during development!`
-                        }]
-                };
-            }
-            catch (error) {
-                return {
-                    content: [{
-                            type: 'text',
-                            text: `❌ **Failed to Start Dev Server**
-
-**Error**: ${error instanceof Error ? error.message : String(error)}
-
-**Suggestions**:
-• Check that the command exists and is executable
-• Verify you're in the correct directory
-• Ensure no other dev server is already running on the same port
-• Try running the command manually first: \`${args.command} ${(args.args || []).join(' ')}\``
-                        }],
-                    isError: true
-                };
-            }
-        });
         this.server.registerTool('suggest_monitoring_setup', {
             title: 'Suggest Monitoring Setup',
             description: 'Analyze current project and suggest optimal MCP monitoring configuration',
@@ -300,10 +245,10 @@ You can now ask me about any errors that occur during development!`
                     suggestions += `📍 **Found Running Dev Server**:\n`;
                     suggestions += `• Process: ${existingProcess.command} (PID: ${existingProcess.pid})\n`;
                     suggestions += `• Status: Can detect but cannot monitor logs\n\n`;
-                    suggestions += `💡 **Recommendation**: Restart with MCP monitoring\n`;
+                    suggestions += `💡 **Recommendation**: Start with persistent monitoring\n`;
                     suggestions += `• Stop current dev server (Ctrl+C)\n`;
-                    suggestions += `• Use MCP tool: \`start_dev_server\` with your command\n`;
-                    suggestions += `• Or ask Claude: "Start my dev server with pnpm run dev using devserver-mcp"\n\n`;
+                    suggestions += `• Use terminal: \`node dist/server.js --monitor ${existingProcess.command}\`\n`;
+                    suggestions += `• This enables persistent monitoring that survives Claude Code restarts\n\n`;
                 }
                 // Analyze package.json for dev scripts
                 try {
@@ -361,8 +306,8 @@ You can now ask me about any errors that occur during development!`
                 suggestions += `• File watching: ${isMonitoring ? '✅ Enabled' : '❌ Disabled'}\n\n`;
                 if (!isMonitoring) {
                     suggestions += `🎯 **Next Steps**:\n`;
-                    suggestions += `1. Use the \`start_dev_server\` tool to begin monitoring\n`;
-                    suggestions += `2. Or ask Claude to start your dev server with monitoring\n`;
+                    suggestions += `1. Use terminal monitoring: \`node dist/server.js --monitor <your-dev-command>\`\n`;
+                    suggestions += `2. This provides persistent monitoring that survives Claude Code restarts\n`;
                     suggestions += `3. All errors will be automatically categorized and tracked\n`;
                 }
                 else {
@@ -418,11 +363,11 @@ You can now ask me about any errors that occur during development!`
     async startDevServerMonitoring(command, args, cwd) {
         await this.processMonitor.startMonitoring(command, args, cwd);
         this.fileWatcher.startWatching();
-        // Start periodic state updates when in monitoring mode
+        // Start lightweight heartbeat to keep state fresh (every 25 seconds)
         if (this.isMonitoringMode) {
             setInterval(() => {
-                this.updateSharedState().catch(console.error);
-            }, 10000); // Update every 10 seconds
+                this.sharedState.updateHeartbeat().catch(console.error);
+            }, 25000); // Update every 25 seconds (within 30-second staleness threshold)
         }
     }
     async updateSharedState() {

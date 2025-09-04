@@ -162,9 +162,6 @@ Your dev server runs continuously. Claude Code connects only when you need error
 - **`suggest_monitoring_setup`** - Analyze your project and recommend optimal setup
 - **`clear_error_history`** - Reset tracking state
 
-**Alternative (Not Recommended):**
-- **`start_dev_server`** - Start dev server under Claude Code control (defeats persistence purpose)
-
 ### **Smart Usage Examples**
 
 **Step 1: Terminal Setup (Once)**
