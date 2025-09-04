@@ -1,0 +1,13 @@
+{
+  "processPatterns": [
+    "pnpm run dev",
+    "npm run dev",
+    "yarn dev",
+    "vite",
+    "vite dev"
+  ],
+  "historyLimit": 500,
+  "correlationWindow": 5000,
+  "watchPaths": ["src", "lib", "components"],
+  "excludePaths": ["node_modules", ".git", "dist", ".svelte-kit"]
+}

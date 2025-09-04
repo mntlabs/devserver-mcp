@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# Build artifacts we don't want
+*.map
+
+# Runtime and temporary files  
+/tmp/devserver-mcp-state.json
+*.log
+*.tmp
+
+# Environment and OS files
+.env
+.env.*
+.DS_Store
+.DS_Store?
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Testing and coverage
+coverage/
+.nyc_output/
+
+# Package archives
+*.tgz
