@@ -126,14 +126,6 @@ pnpm test        # Run tests
 pnpm typecheck   # Type checking
 ```
 
-## Benefits over Previous Architecture
-
--   ✅ **Real-time notifications** instead of polling
--   ✅ **No shared state files** or filesystem dependencies
--   ✅ **Multiple client support** for team development
--   ✅ **Connection resilience** with automatic reconnection
--   ✅ **Simplified setup** with auto-generated connection commands
-
 ## Troubleshooting
 
 ### Connection Failed
@@ -182,9 +174,6 @@ claude mcp add --transport sse project-a http://127.0.0.1:9338/sse
 claude mcp add --transport sse project-b http://127.0.0.1:9339/sse
 ```
 
-## Migration from Previous Version
-
-See [MIGRATION.md](./MIGRATION.md) for detailed migration instructions from the previous stdio-based architecture.
 
 ## License
 
