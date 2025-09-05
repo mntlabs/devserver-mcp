@@ -65,7 +65,12 @@ export class ProcessMonitor extends EventEmitter {
             this.process = spawn(command, args || [], {
                 cwd: cwd || process.cwd(),
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: true
+                shell: true,
+                env: {
+                    ...process.env,
+                    FORCE_COLOR: '1', // Force color output even when piped
+                    NO_COLOR: undefined // Remove any color suppression
+                }
             });
             if (!this.process.pid) {
                 throw new Error('Failed to get process PID');

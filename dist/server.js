@@ -86,38 +86,38 @@ class DevServerMCP {
     setupEventHandlers() {
         // Process monitor events
         this.processMonitor.on('log', (line, source) => {
-            // Always show dev server output for better UX
-            const prefix = source === 'stderr' ? '🔴' : '🟢';
-            console.error(`${prefix} ${line}`);
+            // Always show original dev server output unchanged with colors preserved
+            if (source === 'stderr') {
+                process.stderr.write(line + '\n');
+            }
+            else {
+                process.stdout.write(line + '\n');
+            }
             const error = this.logParser.parseLog(line);
             if (error) {
-                // Emit real-time error notifications
-                console.error(`🚨 [${error.severity}] ${error.category}: ${error.message}`);
-                // Broadcast error to all SSE connections
+                // Broadcast error to all SSE connections (silently)
                 this.broadcastErrorToSSEClients(error);
             }
         });
         this.processMonitor.on('process-start', (process) => {
-            console.error(`🚀 Dev server started: ${process.command} (PID: ${process.pid})`);
             this.fileWatcher.startWatching();
-            // Broadcast process start to SSE clients
+            // Broadcast process start to SSE clients (silently)
             this.broadcastProcessEventToSSEClients('started', process);
         });
         this.processMonitor.on('process-exit', (code) => {
-            console.error(`🛑 Dev server exited with code: ${code}`);
             this.fileWatcher.stopWatching();
-            // Broadcast process exit to SSE clients
+            // Broadcast process exit to SSE clients (silently)
             this.broadcastProcessEventToSSEClients('exited', { exitCode: code });
         });
         this.processMonitor.on('error', (error) => {
             console.error(`❌ Process monitor error:`, error);
         });
-        // File watcher events
+        // File watcher events (silent - only used internally)
         this.fileWatcher.on('file-change', (change) => {
-            console.error(`📝 File ${change.type}: ${change.path}`);
+            // File changes tracked silently for correlation
         });
         this.fileWatcher.on('error-correlation', (correlation) => {
-            console.error(`🔗 Correlation detected: ${correlation.fileChange.path} -> ${correlation.errors.length} errors`);
+            // Error correlations tracked silently
         });
     }
     registerTools() {
@@ -358,12 +358,10 @@ class DevServerMCP {
                     this.activeSSEConnections.delete(transport);
                 };
                 transport.onerror = (error) => {
-                    console.error('❌ SSE transport error:', error);
                     this.activeSSEConnections.delete(transport);
                 };
                 await this.server.connect(transport);
-                console.error(`🔗 New SSE connection established`);
-                // Send buffered errors to the newly connected client
+                // Send buffered errors to the newly connected client (silently)
                 setTimeout(() => {
                     this.sendBufferedErrors(transport);
                 }, 100); // Small delay to ensure connection is ready
@@ -459,9 +457,8 @@ class DevServerMCP {
         };
         // Add to error buffer for disconnected clients
         this.addToErrorBuffer(notification);
-        // If no clients connected, just buffer the error
+        // If no clients connected, just buffer the error (silently)
         if (this.activeSSEConnections.size === 0) {
-            console.error(`📦 Buffered error (no clients connected): [${error.severity}] ${error.message}`);
             return;
         }
         // Broadcast to all connected SSE clients
@@ -470,12 +467,10 @@ class DevServerMCP {
                 transport.send(notification);
             }
             catch (error) {
-                console.error('❌ Failed to send error notification to SSE client:', error);
-                // Remove failed connection
+                // Remove failed connection (silently)
                 this.activeSSEConnections.delete(transport);
             }
         }
-        console.error(`📡 Broadcasted error to ${this.activeSSEConnections.size} SSE client(s)`);
     }
     broadcastProcessEventToSSEClients(event, data) {
         if (this.activeSSEConnections.size === 0) {
@@ -506,7 +501,7 @@ class DevServerMCP {
                 this.activeSSEConnections.delete(transport);
             }
         }
-        console.error(`📡 Broadcasted ${event} event to ${this.activeSSEConnections.size} SSE client(s)`);
+        // Process events broadcasted silently
     }
     addToErrorBuffer(notification) {
         const timestamp = Date.now();
@@ -531,9 +526,7 @@ class DevServerMCP {
                 break;
             }
         }
-        if (this.errorBuffer.length > 0) {
-            console.error(`📤 Sent ${this.errorBuffer.length} buffered errors to new SSE client`);
-        }
+        // Buffered errors sent silently
     }
 }
 // Handle graceful shutdown

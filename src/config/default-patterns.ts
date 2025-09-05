@@ -37,6 +37,14 @@ export const defaultPatterns: LogPattern[] = [
   },
 
   {
+    name: 'svelte-plugin-compile-error',
+    pattern: /\[plugin:vite-plugin-svelte:compile\] (.+):(\d+):(\d+) (.+)/gm,
+    category: 'svelte',
+    severity: 'critical',
+    extract: { file: 1, line: 2, column: 3, message: 4 }
+  },
+
+  {
     name: 'svelte-plugin-warning',
     pattern: /\[plugin:vite:svelte\] (.+) \((.+):(\d+):(\d+)\)/gm,
     category: 'svelte',
@@ -49,6 +57,24 @@ export const defaultPatterns: LogPattern[] = [
     pattern: /\[vite-plugin-svelte\] (.+):(\d+):(\d+) (.+)/gm,
     category: 'accessibility',
     severity: 'warning',
+    extract: { file: 1, line: 2, column: 3, message: 4 }
+  },
+
+  // Vite pre-transform errors (compilation errors during HMR)
+  {
+    name: 'vite-pre-transform-error',
+    pattern: /\[vite\] \(client\) Pre-transform error: (.+):(\d+):(\d+) (.+)/gm,
+    category: 'svelte',
+    severity: 'critical',
+    extract: { file: 1, line: 2, column: 3, message: 4 }
+  },
+
+  // Vite internal server errors (like Svelte compilation errors)
+  {
+    name: 'vite-internal-server-error',
+    pattern: /\[vite\] Internal server error: (.+):(\d+):(\d+) (.+)/gm,
+    category: 'svelte',
+    severity: 'critical',
     extract: { file: 1, line: 2, column: 3, message: 4 }
   },
 
