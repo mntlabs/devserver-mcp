@@ -103,6 +103,7 @@ Create `devserver-mcp.config.json`:
 {
     "processPatterns": ["pnpm run dev", "npm run dev"],
     "historyLimit": 1000,
+    "correlationWindow": 5000,
     "watchPaths": ["src", "lib"],
     "excludePaths": ["node_modules", ".git"],
     "patterns": [

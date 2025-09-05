@@ -1,13 +1,27 @@
 {
   "processPatterns": [
     "pnpm run dev",
-    "npm run dev",
+    "npm run dev", 
     "yarn dev",
     "vite",
     "vite dev"
   ],
-  "historyLimit": 500,
+  "historyLimit": 1000,
   "correlationWindow": 5000,
   "watchPaths": ["src", "lib", "components"],
-  "excludePaths": ["node_modules", ".git", "dist", ".svelte-kit"]
+  "excludePaths": ["node_modules", ".git", "dist", ".svelte-kit"],
+  "patterns": [
+    {
+      "name": "custom-error",
+      "pattern": "CUSTOM: (.+)",
+      "category": "runtime",
+      "severity": "critical"
+    },
+    {
+      "name": "api-error",
+      "pattern": "API Error: (.+)",
+      "category": "network",
+      "severity": "warning"
+    }
+  ]
 }
