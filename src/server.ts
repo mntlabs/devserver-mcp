@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { URL } from 'url';
 import * as YAML from 'yaml';
 import { z } from 'zod';
 
@@ -18,7 +20,6 @@ import { FileWatcher } from './file-watcher.js';
 import { createGetDevServerStatus } from './tools/status.js';
 import { createGetErrorSummary, createGetFileErrors, createClearErrorHistory } from './tools/errors.js';
 import { createGetErrorHistory, createWatchForErrors } from './tools/history.js';
-import { SharedStateManager } from './shared-state.js';
 
 class DevServerMCP {
   private server: McpServer;
@@ -26,8 +27,13 @@ class DevServerMCP {
   private logParser: LogParser;
   private fileWatcher: FileWatcher;
   private config: any;
-  private sharedState: SharedStateManager;
   private isMonitoringMode: boolean = false;
+  private httpServer: ReturnType<typeof createServer> | undefined;
+  private port: number = 9338; // Default port for devserver-mcp
+  private activeSSEConnections: Set<SSEServerTransport> = new Set();
+  private errorBuffer: Array<{notification: any, timestamp: number}> = [];
+  private readonly maxBufferSize = 50; // Keep last 50 errors
+  private readonly bufferRetentionMs = 5 * 60 * 1000; // Keep errors for 5 minutes
 
   constructor() {
     this.server = new McpServer({
@@ -48,7 +54,6 @@ class DevServerMCP {
     this.processMonitor = new ProcessMonitor(this.config);
     this.logParser = new LogParser(this.config);
     this.fileWatcher = new FileWatcher(this.config);
-    this.sharedState = new SharedStateManager();
 
     // Note: Test errors removed - now using real dev server monitoring
 
@@ -110,10 +115,9 @@ class DevServerMCP {
         // Emit real-time error notifications
         console.error(`🚨 [${error.severity}] ${error.category}: ${error.message}`);
         
-        // Update shared state when in monitoring mode
-        if (this.isMonitoringMode) {
-          this.updateSharedState().catch(console.error);
-        }
+        // Broadcast error to all SSE connections
+        this.broadcastErrorToSSEClients(error);
+        
       }
     });
 
@@ -121,15 +125,17 @@ class DevServerMCP {
       console.error(`🚀 Dev server started: ${process.command} (PID: ${process.pid})`);
       this.fileWatcher.startWatching();
       
-      // Update shared state when in monitoring mode
-      if (this.isMonitoringMode) {
-        this.updateSharedState();
-      }
+      // Broadcast process start to SSE clients
+      this.broadcastProcessEventToSSEClients('started', process);
+      
     });
 
     this.processMonitor.on('process-exit', (code) => {
       console.error(`🛑 Dev server exited with code: ${code}`);
       this.fileWatcher.stopWatching();
+      
+      // Broadcast process exit to SSE clients
+      this.broadcastProcessEventToSSEClients('exited', { exitCode: code });
     });
 
     this.processMonitor.on('error', (error) => {
@@ -158,30 +164,12 @@ class DevServerMCP {
       async () => {
         let processInfo, uptime, errorCounts, recentErrors, isRunning;
         
-        if (this.isMonitoringMode) {
-          // Direct monitoring mode - use local state
-          processInfo = this.processMonitor.getProcessInfo();
-          uptime = this.processMonitor.getUptime();
-          errorCounts = this.logParser.getErrorCounts();
-          recentErrors = this.logParser.getRecentErrors(1);
-          isRunning = this.processMonitor.isRunning();
-          
-          // Update shared state for other instances
-          await this.sharedState.writeState({
-            processInfo,
-            isRunning,
-            errors: recentErrors,
-            errorCounts
-          });
-        } else {
-          // Client mode - read from shared state
-          const sharedData = await this.sharedState.readState();
-          processInfo = sharedData.processInfo;
-          uptime = processInfo ? Date.now() - new Date(processInfo.startTime).getTime() : null;
-          errorCounts = sharedData.errorCounts;
-          recentErrors = sharedData.errors.slice(0, 1);
-          isRunning = sharedData.isRunning;
-        }
+        // Always use direct monitoring state
+        processInfo = this.processMonitor.getProcessInfo();
+        uptime = this.processMonitor.getUptime();
+        errorCounts = this.logParser.getErrorCounts();
+        recentErrors = this.logParser.getRecentErrors(1);
+        isRunning = this.processMonitor.isRunning();
         
         
         const status = {
@@ -293,6 +281,33 @@ class DevServerMCP {
       async () => createClearErrorHistory(this.logParser).handler()
     );
 
+    this.server.registerTool(
+      'get_error_history',
+      {
+        title: 'Get Error History',
+        description: 'Get chronological error history with optional filtering',
+        inputSchema: {
+          severity: z.string().optional().describe('Filter by error severity: critical, warning, info'),
+          category: z.string().optional().describe('Filter by error category'),
+          limit: z.number().optional().describe('Maximum number of errors to return'),
+          since: z.string().optional().describe('ISO date string - only show errors since this time'),
+        },
+      },
+      async (args: any) => createGetErrorHistory(this.logParser).handler(args)
+    );
+
+    this.server.registerTool(
+      'watch_for_errors',
+      {
+        title: 'Watch for Errors',
+        description: 'Get real-time error monitoring information and recent correlations',
+        inputSchema: {
+          includeCorrelations: z.boolean().optional().describe('Include file change correlations'),
+          recentMinutes: z.number().optional().describe('Minutes of recent activity to include'),
+        },
+      },
+      async (args: any) => createWatchForErrors(this.logParser, this.fileWatcher).handler(args)
+    );
 
     this.server.registerTool(
       'suggest_monitoring_setup',
@@ -406,34 +421,111 @@ class DevServerMCP {
     );
   }
 
-  async start(): Promise<void> {
+
+  async startHTTP(): Promise<void> {
     await this.loadConfig();
     
-    const transport = new StdioServerTransport();
-    
-    console.error('🔍 DevServer MCP starting...');
+    console.error('🔍 DevServer MCP starting in HTTP/SSE mode...');
     console.error(`📊 Loaded ${this.config.patterns.length} error patterns`);
     console.error(`👀 Watching paths: ${this.config.watchPaths.join(', ')}`);
-    
-    // Auto-connect to existing monitored dev server if available
-    try {
-      const existingProcess = await this.processMonitor.findRunningDevServer();
-      if (existingProcess) {
-        console.error(`👀 Found running dev server: ${existingProcess.command} (PID: ${existingProcess.pid})`);
-        
-        // Check if there's a monitoring MCP server already running
-        // If so, inherit its state instead of competing
-        console.error('🔗 Connecting to existing dev server monitoring...');
-        
-      } else {
-        console.error('ℹ️  No dev server detected. Ready to start monitoring when you begin development.');
-      }
-    } catch (error) {
-      console.error('⚠️  Could not check for existing dev servers:', error);
-    }
 
-    await this.server.connect(transport);
-    console.error('✅ DevServer MCP ready for connections');
+    // Create HTTP server for SSE transport
+    this.httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+      const url = new URL(req.url || '/', `http://${req.headers.host}`);
+      
+      // Handle CORS
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+
+      if (url.pathname === '/sse' && req.method === 'GET') {
+        // Handle SSE connection
+        const transport = new SSEServerTransport('/messages', res);
+        this.activeSSEConnections.add(transport);
+        
+        transport.onclose = () => {
+          this.activeSSEConnections.delete(transport);
+        };
+
+        transport.onerror = (error) => {
+          console.error('❌ SSE transport error:', error);
+          this.activeSSEConnections.delete(transport);
+        };
+
+        await this.server.connect(transport);
+        console.error(`🔗 New SSE connection established`);
+        
+        // Send buffered errors to the newly connected client
+        setTimeout(() => {
+          this.sendBufferedErrors(transport);
+        }, 100); // Small delay to ensure connection is ready
+
+      } else if (url.pathname === '/messages' && req.method === 'POST') {
+        // Handle POST messages for existing SSE connections
+        const sessionId = url.searchParams.get('sessionId');
+        const transport = Array.from(this.activeSSEConnections).find(t => t.sessionId === sessionId);
+        
+        if (transport) {
+          await transport.handlePostMessage(req, res);
+        } else {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Session not found');
+        }
+
+      } else {
+        // Handle other routes
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+      }
+    });
+
+    // Use specified port with error handling
+    this.httpServer.listen(this.port, '127.0.0.1', () => {
+      console.error(`🚀 HTTP server listening on http://127.0.0.1:${this.port}`);
+      console.error('');
+      console.error('🔗 To connect Claude Code, run:');
+      console.error(`claude mcp add --transport sse devserver-mcp http://127.0.0.1:${this.port}/sse`);
+      console.error('');
+    });
+
+    this.httpServer.on('error', (error: any) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${this.port} is already in use!`);
+        console.error('💡 Try a different port with: --port <number>');
+        console.error(`   Example: node dist/server.js --port 9339 --monitor pnpm run dev`);
+        process.exit(1);
+      } else {
+        console.error('❌ HTTP server error:', error);
+        process.exit(1);
+      }
+    });
+
+    // Setup graceful shutdown for HTTP server
+    process.on('SIGINT', () => this.stopHTTP());
+    process.on('SIGTERM', () => this.stopHTTP());
+  }
+
+  async stopHTTP(): Promise<void> {
+    if (this.httpServer) {
+      // Close all SSE connections
+      for (const transport of this.activeSSEConnections) {
+        await transport.close();
+      }
+      this.activeSSEConnections.clear();
+
+      // Close HTTP server
+      this.httpServer.close();
+      this.httpServer = undefined;
+      console.error('🔌 HTTP server stopped');
+    }
+    
+    await this.stop();
   }
 
   async stop(): Promise<void> {
@@ -447,28 +539,120 @@ class DevServerMCP {
     await this.processMonitor.startMonitoring(command, args, cwd);
     this.fileWatcher.startWatching();
     
-    // Start lightweight heartbeat to keep state fresh (every 25 seconds)
-    if (this.isMonitoringMode) {
-      setInterval(() => {
-        this.sharedState.updateHeartbeat().catch(console.error);
-      }, 25000); // Update every 25 seconds (within 30-second staleness threshold)
+  }
+
+
+  private broadcastErrorToSSEClients(error: any): void {
+    // Create MCP notification message for real-time error streaming
+    const notification = {
+      jsonrpc: '2.0' as const,
+      method: 'notifications/devserver/error_detected' as const,
+      params: {
+        error: {
+          severity: error.severity,
+          category: error.category,
+          message: error.message,
+          file: error.file,
+          line: error.line,
+          column: error.column,
+          timestamp: error.timestamp.toISOString(),
+          rawLog: error.rawLog
+        },
+        context: {
+          processInfo: this.processMonitor.getProcessInfo(),
+          isRunning: this.processMonitor.isRunning(),
+          errorCounts: this.logParser.getErrorCounts()
+        }
+      }
+    };
+
+    // Add to error buffer for disconnected clients
+    this.addToErrorBuffer(notification);
+
+    // If no clients connected, just buffer the error
+    if (this.activeSSEConnections.size === 0) {
+      console.error(`📦 Buffered error (no clients connected): [${error.severity}] ${error.message}`);
+      return;
+    }
+
+    // Broadcast to all connected SSE clients
+    for (const transport of this.activeSSEConnections) {
+      try {
+        transport.send(notification);
+      } catch (error) {
+        console.error('❌ Failed to send error notification to SSE client:', error);
+        // Remove failed connection
+        this.activeSSEConnections.delete(transport);
+      }
+    }
+
+    console.error(`📡 Broadcasted error to ${this.activeSSEConnections.size} SSE client(s)`);
+  }
+
+  private broadcastProcessEventToSSEClients(event: 'started' | 'exited', data: any): void {
+    if (this.activeSSEConnections.size === 0) {
+      return; // No SSE clients connected
+    }
+
+    // Create MCP notification message for process state changes
+    const notification = {
+      jsonrpc: '2.0' as const,
+      method: 'notifications/devserver/process_event' as const,
+      params: {
+        event,
+        data,
+        timestamp: new Date().toISOString(),
+        context: {
+          isRunning: this.processMonitor.isRunning(),
+          errorCounts: this.logParser.getErrorCounts()
+        }
+      }
+    };
+
+    // Broadcast to all connected SSE clients
+    for (const transport of this.activeSSEConnections) {
+      try {
+        transport.send(notification);
+      } catch (error) {
+        console.error('❌ Failed to send process event notification to SSE client:', error);
+        // Remove failed connection
+        this.activeSSEConnections.delete(transport);
+      }
+    }
+
+    console.error(`📡 Broadcasted ${event} event to ${this.activeSSEConnections.size} SSE client(s)`);
+  }
+
+  private addToErrorBuffer(notification: any): void {
+    const timestamp = Date.now();
+    
+    // Add new error to buffer
+    this.errorBuffer.push({ notification, timestamp });
+    
+    // Clean up old errors beyond retention time
+    const cutoff = timestamp - this.bufferRetentionMs;
+    this.errorBuffer = this.errorBuffer.filter(item => item.timestamp > cutoff);
+    
+    // Limit buffer size
+    if (this.errorBuffer.length > this.maxBufferSize) {
+      this.errorBuffer = this.errorBuffer.slice(-this.maxBufferSize);
     }
   }
 
-  private async updateSharedState(): Promise<void> {
-    if (!this.isMonitoringMode) return;
+  private sendBufferedErrors(transport: SSEServerTransport): void {
+    // Send buffered errors to newly connected client
+    for (const { notification } of this.errorBuffer) {
+      try {
+        transport.send(notification);
+      } catch (error) {
+        console.error('❌ Failed to send buffered error to SSE client:', error);
+        break;
+      }
+    }
     
-    const processInfo = this.processMonitor.getProcessInfo();
-    const errorCounts = this.logParser.getErrorCounts();
-    const recentErrors = this.logParser.getRecentErrors(5); // Get more errors for shared state
-    const isRunning = this.processMonitor.isRunning();
-    
-    await this.sharedState.writeState({
-      processInfo,
-      isRunning,
-      errors: recentErrors,
-      errorCounts
-    });
+    if (this.errorBuffer.length > 0) {
+      console.error(`📤 Sent ${this.errorBuffer.length} buffered errors to new SSE client`);
+    }
   }
 }
 
@@ -487,20 +671,41 @@ process.on('SIGTERM', async () => {
 
 // Handle command line arguments for dev server monitoring
 const args = process.argv.slice(2);
+
+// Parse port argument if provided
+let portIndex = args.indexOf('--port');
+if (portIndex !== -1 && portIndex + 1 < args.length) {
+  const portArg = args[portIndex + 1];
+  if (!portArg) {
+    console.error('❌ --port requires a port number');
+    process.exit(1);
+  }
+  const portValue = parseInt(portArg);
+  if (isNaN(portValue) || portValue < 1 || portValue > 65535) {
+    console.error('❌ Invalid port number. Must be between 1 and 65535.');
+    process.exit(1);
+  }
+  server['port'] = portValue;
+  // Remove port arguments from args array
+  args.splice(portIndex, 2);
+}
+
 if (args.length > 0 && (args[0] === '--monitor' || args[0] === '--start-dev')) {
   // Parse command and args
   const command = args[1];
   const devArgs = args.slice(2);
   
   if (!command) {
-    console.error('❌ Usage: node dist/server.js --monitor <command> [args...]');
-    console.error('   Example: node dist/server.js --monitor pnpm run dev');
+    console.error('❌ Usage: node dist/server.js [--port <number>] --monitor <command> [args...]');
+    console.error('   Example: node dist/server.js --port 9338 --monitor pnpm run dev');
+    console.error('   Example: node dist/server.js --monitor pnpm run dev  # Uses default port 9338');
     process.exit(1);
   }
   
   // Start server and immediately begin monitoring
   server['isMonitoringMode'] = true; // Set monitoring mode flag
-  server.start().then(async () => {
+  
+  server.startHTTP().then(async () => {
     console.error(`🚀 Starting dev server with MCP monitoring: ${command} ${devArgs.join(' ')}`);
     
     // Small delay to ensure MCP server is fully ready
@@ -508,21 +713,22 @@ if (args.length > 0 && (args[0] === '--monitor' || args[0] === '--start-dev')) {
       try {
         await server.startDevServerMonitoring(command, devArgs, process.cwd());
         console.error('✅ Dev server started with full MCP monitoring active');
-        console.error('🔗 MCP server ready for Claude Code connections');
-        console.error('📊 Try: "Get dev server status using devserver-mcp" in Claude Code');
+        console.error('🔗 MCP server ready for SSE connections');
+        console.error('📊 Use the connection command above to link with Claude Code');
       } catch (error) {
         console.error('❌ Failed to start dev server monitoring:', error);
         process.exit(1);
       }
     }, 1000);
-  }).catch((error) => {
+  }).catch((error: any) => {
     console.error('💥 Failed to start DevServer MCP:', error);
     process.exit(1);
   });
+
 } else {
-  // Normal MCP server mode
-  server.start().catch((error) => {
-    console.error('💥 Failed to start DevServer MCP:', error);
+  // Default SSE server mode without monitoring
+  server.startHTTP().catch((error: any) => {
+    console.error('💥 Failed to start DevServer MCP in SSE mode:', error);
     process.exit(1);
   });
 }

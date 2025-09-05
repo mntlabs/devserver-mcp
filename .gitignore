@@ -6,7 +6,6 @@ pnpm-lock.yaml
 *.map
 
 # Runtime and temporary files  
-/tmp/devserver-mcp-state.json
 *.log
 *.tmp
 
